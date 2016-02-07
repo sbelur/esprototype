@@ -20,6 +20,7 @@ import org.elasticsearch.client.transport.TransportClient;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.transport.InetSocketTransportAddress;
 import org.elasticsearch.search.SearchHit;
+import org.elasticsearch.search.aggregations.AggregationBuilders;
 
 /**
  * Created by sbelur on 07/02/16.
@@ -54,7 +55,6 @@ public class ESQuery {
     //.should(QueryBuilders.rangeQuery("date").gte("2016-02-06T04:12:51.255+0530").lte("2016-02-07T04:12:51.255+0530");
 
     //queryRangeTime = "now-" + queryRangeTime + "m";
-
     FilterBuilder fb = FilterBuilders.rangeFilter("date").gte("2016-02-07T01:12:51.255+0530")
         .lte("2016-02-09T04:12:51.255+0530");
 
@@ -90,7 +90,8 @@ public class ESQuery {
         try {
           IndexResponse indexResponse = transportClient.prepareIndex(indexName, "rawdata").setSource(
               jsonBuilder().startObject().field("transport", v.transport).field("filesize", v.filesize)
-                  .field("runtype", v.runtype).endObject()).execute().actionGet();
+                  .field("runtype", v.runtype).field("sdate", "2016-02-07T01:12:51.255+0530")
+                  .field("edate", "2016-02-09T04:12:51.255+0530").endObject()).execute().actionGet();
         } catch (IOException e) {
           //throw new RuntimeException(e);
           e.printStackTrace();
@@ -98,7 +99,29 @@ public class ESQuery {
       }
     });
 
-    //System.out.println(response.toString());
+   qb = QueryBuilders.boolQuery()
+        .must(QueryBuilders.termQuery("runtype", "api"))
+        .must(QueryBuilders.termQuery("sdate", "2016-02-07T01:12:51.255+0530"))
+        .must(QueryBuilders.termQuery("edate", "2016-02-09T04:12:51.255+0530"));
+
+    try {
+      Thread.sleep(1000);
+    } catch (InterruptedException e) {
+      e.printStackTrace();
+    }
+
+    SearchResponse sresponse =  transportClient.prepareSearch(indexName).setTypes("rawdata")
+        .setQuery(qb)
+        //.setPostFilter(fb)
+        .addAggregation(AggregationBuilders.terms("protocol").field("transport")
+        .subAggregation(AggregationBuilders.avg("size_avg").field("filesize"))
+        .subAggregation(AggregationBuilders.min("size_min").field("filesize"))
+        .subAggregation(AggregationBuilders.max("size_max").field("filesize")))
+        .setSize(0).execute().actionGet();
+
+
+
+    System.out.println(sresponse.toString());
     return response;
   }
 
