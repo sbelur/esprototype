@@ -13,8 +13,11 @@ import static org.elasticsearch.common.xcontent.XContentFactory.*;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.stream.Stream;
 
 import org.elasticsearch.client.transport.TransportClient;
 import org.elasticsearch.common.settings.Settings;
@@ -40,13 +43,27 @@ public class ESQuery {
 
   public SearchResponse searchResultWithAggregation() {
 
+    Calendar now = Calendar.getInstance();
+    now.set(Calendar.MILLISECOND, 0);
+    now.set(Calendar.SECOND, 0);
+    SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSZ");
+    String endtime = sdf.format(now.getTime());
+
     String indexName = "aggregation-input";
-    if (!indexExists(indexName)) {
-      CreateIndexRequestBuilder cirb = transportClient.admin().indices().prepareCreate(indexName);
-      CreateIndexResponse createIndexResponse = cirb.execute().actionGet();
-      if (!createIndexResponse.isAcknowledged())
-        throw new RuntimeException("Could not create index [" + indexName + "].");
+    createIndex(indexName);
+    createIndex("aggregation-meta");
+
+    String startTime = null;
+    SearchResponse metaResp = transportClient.prepareSearch("aggregation-meta").setTypes("meta")
+        .setQuery(QueryBuilders.matchAllQuery()).execute().actionGet();
+    System.out.println(metaResp.toString());
+    long metahitcount = metaResp.getHits().getTotalHits();
+    if (metahitcount == 0) {
+      now.set(Calendar.DATE, now.get(Calendar.DATE) - 7);
+      now.set(Calendar.MINUTE, 0);
+      startTime = sdf.format(now.getTime());
     }
+    // todo fill starttime if not null
 
     QueryBuilder qb = QueryBuilders.boolQuery().mustNot(QueryBuilders.termQuery("type", "detail"))
         .mustNot(QueryBuilders.termQuery("type", "end")).mustNot(QueryBuilders.termQuery("type", "request"))
@@ -55,14 +72,13 @@ public class ESQuery {
     //.should(QueryBuilders.rangeQuery("date").gte("2016-02-06T04:12:51.255+0530").lte("2016-02-07T04:12:51.255+0530");
 
     //queryRangeTime = "now-" + queryRangeTime + "m";
-    FilterBuilder fb = FilterBuilders.rangeFilter("date").gte("2016-02-07T01:12:51.255+0530")
-        .lte("2016-02-09T04:12:51.255+0530");
+    FilterBuilder fb = FilterBuilders.rangeFilter("date").gte(startTime).lte(endtime);
 
     SearchResponse response = transportClient.prepareSearch("versalex-2016-02-07").setTypes("systemlog").setQuery(qb)
         .setPostFilter(fb).setSize(10000).execute().actionGet();//todo - paginate
 
     SearchHit hits[] = response.getHits().hits();
-    Map<String, Record> tidMapping = new HashMap<>();
+    Map<String, List<Record>> tidMapping = new HashMap<>();
     Arrays.stream(hits).forEach(h -> {
       //System.out.println("A hit ...");
       //h.getSource().forEach((k,v) -> System.out.println("Tuple "+k+" , "+v));
@@ -70,11 +86,37 @@ public class ESQuery {
       Map atts = (Map) source.get("attributes");
       String ty = (String) atts.get("runtype");
       String threadId = (String) source.get("threadId");
-      tidMapping.putIfAbsent(threadId, new Record());
-      Record r = tidMapping.get(threadId);
+      String file = (String) atts.get("source");
+      String dt = (String) source.get("date");
+
+      tidMapping.putIfAbsent(threadId, new ArrayList<Record>());
+      List<Record> list = tidMapping.get(threadId);
+      Stream<Record> recordStream = list.stream().filter(r -> r.date.equals(dt));
+      Record r = null;
+      Optional<Record> first = recordStream.findFirst();
+      if (first.isPresent()) {
+        r = first.get();
+      } else {
+        r = new Record();
+        list.add(r);
+      }
       r.threadId = threadId;
+      if (file != null)
+        r.source = file;
+
+      if (dt != null)
+        r.date = dt;
+
       if (ty != null)
         r.runtype = ty;
+      else {
+        Optional<Record> aRec = list.stream().filter(rec -> rec.threadId.equals(threadId))
+            .filter(record -> record.runtype != null).findFirst();
+        if (aRec.isPresent()) {
+          r.runtype = aRec.get().runtype;
+        }
+      }
+
       String prt = (String) atts.get("transport");
       //System.out.println(prt + " , "+threadId + " , "+r.runtype);
       if (prt != null)
@@ -85,24 +127,23 @@ public class ESQuery {
 
     });
 
-    tidMapping.forEach((k, v) -> {
-      if (null != v.runtype && !v.runtype.isEmpty()) {
-        try {
-          IndexResponse indexResponse = transportClient.prepareIndex(indexName, "rawdata").setSource(
-              jsonBuilder().startObject().field("transport", v.transport).field("filesize", v.filesize)
-                  .field("runtype", v.runtype).field("sdate", "2016-02-07T01:12:51.255+0530")
-                  .field("edate", "2016-02-09T04:12:51.255+0530").endObject()).execute().actionGet();
-        } catch (IOException e) {
-          //throw new RuntimeException(e);
-          e.printStackTrace();
+    tidMapping.forEach((thread, recList) -> {
+      recList.stream().forEach(rec -> {
+        if (null != rec.runtype && !rec.runtype.isEmpty() && !rec.runtype.equals("startup")) {
+          try {
+            IndexResponse indexResponse = transportClient.prepareIndex(indexName, "rawdata").setSource(
+                jsonBuilder().startObject().field("transport", rec.transport).field("filesize", rec.filesize)
+                    .field("runtype", rec.runtype).field("date", rec.date).field("source", rec.source).endObject())
+                .execute().actionGet();
+          } catch (IOException e) {
+            //throw new RuntimeException(e);
+            e.printStackTrace();
+          }
         }
-      }
+      });
     });
 
-   qb = QueryBuilders.boolQuery()
-        .must(QueryBuilders.termQuery("runtype", "api"))
-        .must(QueryBuilders.termQuery("sdate", "2016-02-07T01:12:51.255+0530"))
-        .must(QueryBuilders.termQuery("edate", "2016-02-09T04:12:51.255+0530"));
+    qb = QueryBuilders.boolQuery().must(QueryBuilders.termQuery("runtype", "api"));
 
     try {
       Thread.sleep(1000);
@@ -110,19 +151,26 @@ public class ESQuery {
       e.printStackTrace();
     }
 
-    SearchResponse sresponse =  transportClient.prepareSearch(indexName).setTypes("rawdata")
-        .setQuery(qb)
+    SearchResponse sresponse = transportClient.prepareSearch(indexName).setTypes("rawdata").setQuery(qb)
         //.setPostFilter(fb)
-        .addAggregation(AggregationBuilders.terms("protocol").field("transport")
-        .subAggregation(AggregationBuilders.avg("size_avg").field("filesize"))
-        .subAggregation(AggregationBuilders.min("size_min").field("filesize"))
-        .subAggregation(AggregationBuilders.max("size_max").field("filesize")))
-        .setSize(0).execute().actionGet();
-
-
+        .addAggregation(AggregationBuilders.terms("date").field("date").subAggregation(
+            AggregationBuilders.terms("protocol").field("transport")
+                .subAggregation(AggregationBuilders.avg("size_avg").field("filesize"))
+                .subAggregation(AggregationBuilders.min("size_min").field("filesize"))
+                .subAggregation(AggregationBuilders.max("size_max").field("filesize")))).setSize(0).execute()
+        .actionGet();
 
     System.out.println(sresponse.toString());
     return response;
+  }
+
+  private void createIndex(String indexName) {
+    if (!indexExists(indexName)) {
+      CreateIndexRequestBuilder cirb = transportClient.admin().indices().prepareCreate(indexName);
+      CreateIndexResponse createIndexResponse = cirb.execute().actionGet();
+      if (!createIndexResponse.isAcknowledged())
+        throw new RuntimeException("Could not create index [" + indexName + "].");
+    }
   }
 
   public static void main(String[] args) {
@@ -134,12 +182,16 @@ public class ESQuery {
     private String transport;
     private int filesize;
     private String runtype;
+    public String date;
+    public String source;
 
     @Override public String toString() {
       return "Record{" +
           "threadId='" + threadId + '\'' +
           ", transport='" + transport + '\'' +
           ", filesize=" + filesize +
+          ", date=" + date +
+          ", source=" + source +
           ", runtype='" + runtype + '\'' +
           '}';
     }
