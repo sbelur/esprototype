@@ -2,48 +2,51 @@ import org.elasticsearch.action.admin.indices.create.CreateIndexRequestBuilder;
 import org.elasticsearch.action.admin.indices.create.CreateIndexResponse;
 import org.elasticsearch.action.index.IndexResponse;
 import org.elasticsearch.action.search.SearchResponse;
-import org.elasticsearch.client.Client;
+import org.elasticsearch.client.transport.TransportClient;
+import org.elasticsearch.common.settings.Settings;
+import org.elasticsearch.index.query.QueryBuilder;
+import org.elasticsearch.index.query.QueryBuilders;
+import org.elasticsearch.search.SearchHit;
+import org.elasticsearch.search.aggregations.AggregationBuilders;
+import org.elasticsearch.search.aggregations.bucket.histogram.DateHistogramInterval;
+import org.elasticsearch.search.aggregations.bucket.terms.Terms;
+
+import java.io.IOException;
+import java.text.SimpleDateFormat;
+import java.util.*;
+import java.util.stream.Stream;
+
+import static org.elasticsearch.common.xcontent.XContentFactory.jsonBuilder;
+import static org.elasticsearch.index.query.QueryBuilders.rangeQuery;
+
 /*
 import org.elasticsearch.common.settings.ImmutableSettings;
 import org.elasticsearch.index.query.FilterBuilder;
 import org.elasticsearch.index.query.FilterBuilders;
 */
-import org.elasticsearch.index.query.QueryBuilder;
-import org.elasticsearch.index.query.QueryBuilders;
-
-import static org.elasticsearch.common.xcontent.XContentFactory.*;
-
-import java.io.IOException;
-import java.net.InetSocketAddress;
-import java.text.SimpleDateFormat;
-import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ScheduledThreadPoolExecutor;
-import java.util.stream.Stream;
-
-import org.elasticsearch.client.transport.TransportClient;
-import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.common.transport.InetSocketTransportAddress;
-import org.elasticsearch.search.SearchHit;
-import org.elasticsearch.search.aggregations.Aggregation;
-import org.elasticsearch.search.aggregations.AggregationBuilders;
-import org.elasticsearch.search.aggregations.bucket.histogram.DateHistogram;
-import org.elasticsearch.search.aggregations.bucket.histogram.InternalDateHistogram;
-import org.elasticsearch.search.aggregations.bucket.terms.Terms;
+//import org.elasticsearch.search.aggregations.bucket.histogram.DateHistogram;
+//import org.elasticsearch.search.aggregations.bucket.histogram.InternalDateHistogram;
 
 /**
  * Created by sbelur on 07/02/16.
  */
-public class ESQuery {
+public class ESQuery2 {
 
   private TransportClient transportClient;
 
-  public ESQuery() {
-    Settings settings = ImmutableSettings.settingsBuilder().put("http.port", 9200)
+  public ESQuery2() {
+    Settings settings = Settings.settingsBuilder()
+        //.put("http.port", 9200)
+        //.put("transport.tcp.port", 9300)
+        .put("client.transport.sniff", true)
         .put("cluster.name", "cleo.elasticsearch").build();
 
-    transportClient = new TransportClient(settings);
-    transportClient.addTransportAddress(new InetSocketTransportAddress("localhost", 9300));
+    try {
+      transportClient = TransportClient.builder().settings(settings).build();
+      //.addTransportAddress(new InetSocketTransportAddress(InetAddress.getByName("localhost"), 9300));
+    } catch (Exception e) {
+      throw new RuntimeException(e);
+    }
 
   }
 
@@ -75,14 +78,15 @@ public class ESQuery {
     QueryBuilder qb = QueryBuilders.boolQuery().mustNot(QueryBuilders.termQuery("type", "detail"))
         .mustNot(QueryBuilders.termQuery("type", "end")).mustNot(QueryBuilders.termQuery("type", "request"))
         .mustNot(QueryBuilders.termQuery("type", "response")).mustNot(QueryBuilders.termQuery("type", "transfer"))
-        .mustNot(QueryBuilders.termQuery("type", "command"));
+        .mustNot(QueryBuilders.termQuery("type", "command"))
+        .filter(rangeQuery("date").gte(startTime).lte(endtime));
     //.should(QueryBuilders.rangeQuery("date").gte("2016-02-06T04:12:51.255+0530").lte("2016-02-07T04:12:51.255+0530");
 
     //queryRangeTime = "now-" + queryRangeTime + "m";
-    FilterBuilder fb = FilterBuilders.rangeFilter("date").gte(startTime).lte(endtime);
+    //filteredQuery(rangeQuery("date").gte(startTime).lte(endtime);
 
     SearchResponse response = transportClient.prepareSearch("versalex-2016-02-07").setTypes("systemlog").setQuery(qb)
-        .setPostFilter(fb).setSize(10000).execute().actionGet();//todo - paginate
+        .setSize(10000).execute().actionGet();//todo - paginate
 
     SearchHit hits[] = response.getHits().hits();
     Map<String, List<Record>> tidMapping = new HashMap<>();
@@ -160,7 +164,7 @@ public class ESQuery {
 
     SearchResponse sresponse = transportClient.prepareSearch(indexName).setTypes("rawdata").setQuery(qb)
         //.setPostFilter(fb)
-        .addAggregation(AggregationBuilders.dateHistogram("date").field("date").interval(DateHistogram.Interval.MINUTE)
+        .addAggregation(AggregationBuilders.dateHistogram("date").field("date").interval(DateHistogramInterval.MINUTE)
             .subAggregation(AggregationBuilders.terms("protocol").field("transport")
                 .subAggregation(AggregationBuilders.avg("size_avg").field("filesize"))
                 .subAggregation(AggregationBuilders.min("size_min").field("filesize"))
@@ -172,7 +176,7 @@ public class ESQuery {
       Terms  terms = sresponse.getAggregations().get("date");
       Collection<Terms.Bucket> buckets = terms.getBuckets();
       for (Terms.Bucket bucket : buckets) {
-        System.out.println(bucket.getKeyAsText() +" ("+bucket.getAggregations()+")");
+        System.out.println(bucket.getAggregations());
       }
     }
 
@@ -190,7 +194,7 @@ public class ESQuery {
   }
 
   public static void main(String[] args) {
-    new ESQuery().searchResultWithAggregation();
+    new ESQuery2().searchResultWithAggregation();
   }
 
   private static class Record {
