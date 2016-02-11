@@ -1,7 +1,9 @@
 import org.elasticsearch.action.admin.indices.create.CreateIndexRequestBuilder;
 import org.elasticsearch.action.admin.indices.create.CreateIndexResponse;
+import org.elasticsearch.action.index.IndexRequest;
 import org.elasticsearch.action.index.IndexResponse;
 import org.elasticsearch.action.search.SearchResponse;
+import org.elasticsearch.action.update.UpdateRequest;
 import org.elasticsearch.client.Client;
 
 import org.elasticsearch.common.settings.ImmutableSettings;
@@ -18,6 +20,7 @@ import java.net.InetSocketAddress;
 import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.stream.Stream;
 
@@ -54,7 +57,6 @@ public class ESQuery {
 
   }
 
-
   public SearchResponse searchResultWithAggregation() {
 
     Calendar now = Calendar.getInstance();
@@ -77,6 +79,12 @@ public class ESQuery {
       now.set(Calendar.DATE, now.get(Calendar.DATE) - 7);
       now.set(Calendar.MINUTE, 0);
       startTime = sdf.format(now.getTime());
+    } else {
+      Optional<SearchHit> lastAggMeta = Arrays.stream(metaResp.getHits().getHits()).findFirst();
+      if (lastAggMeta.isPresent()) {
+        startTime = (String) lastAggMeta.get().getSource().get("lastaggregated");
+        System.out.println("start Time found " + endtime);
+      }
     }
     // todo fill starttime if not null
 
@@ -87,7 +95,8 @@ public class ESQuery {
     //.should(QueryBuilders.rangeQuery("date").gte("2016-02-06T04:12:51.255+0530").lte("2016-02-07T04:12:51.255+0530");
 
     //queryRangeTime = "now-" + queryRangeTime + "m";
-    FilterBuilder fb = FilterBuilders.rangeFilter("date").gte(startTime).lte(endtime);
+    System.out.println("********* startTime " + startTime + " end time " + endtime);
+    FilterBuilder fb = FilterBuilders.rangeFilter("date").gte(startTime).lt(endtime);
 
     SearchResponse response = transportClient.prepareSearch("versalex-2016-02-07").setTypes("systemlog").setQuery(qb)
         .setPostFilter(fb).setSize(10000).execute().actionGet();//todo - paginate
@@ -166,19 +175,21 @@ public class ESQuery {
       e.printStackTrace();
     }
 
-    SearchResponse sresponse = transportClient.prepareSearch(indexName).setTypes("rawdata").setQuery(qb)
-        //.setPostFilter(fb)
+    if (hits.length > 0) {
+      SearchResponse sresponse = transportClient.prepareSearch(indexName).setTypes("rawdata").setQuery(qb)
+          //.setPostFilter(fb)
 
-            .addAggregation(AggregationBuilders.terms("protocol").field("transport").subAggregation(
-                AggregationBuilders.dateHistogram("date").field("date").interval(DateHistogram.Interval.MINUTE)
-                    .subAggregation(AggregationBuilders.avg("size_avg").field("filesize"))
-                    .subAggregation(AggregationBuilders.min("size_min").field("filesize"))
-                    .subAggregation(AggregationBuilders.max("size_max").field("filesize")))).setSize(0).execute()
-        .actionGet();
+          .addAggregation(AggregationBuilders.terms("protocol").field("transport").subAggregation(
+              AggregationBuilders.dateHistogram("date").field("date").interval(DateHistogram.Interval.MINUTE)
+                  .subAggregation(AggregationBuilders.avg("size_avg").field("filesize"))
+                  .subAggregation(AggregationBuilders.min("size_min").field("filesize"))
+                  .subAggregation(AggregationBuilders.max("size_max").field("filesize")))).setSize(0).execute()
+          .actionGet();
 
-    if (sresponse.getHits().getTotalHits() > 0) {
-      System.out.println(sresponse.toString());
-    }
+      if (sresponse.getHits().getTotalHits() > 0) {
+        System.out.println(sresponse.toString());
+      }
+
    /* Aggregations aggs = ((StringTerms) sresponse.getAggregations().asList().get(0)).getBuckets().get(0).getAggregations();
     List<Aggregation> aggregationList = aggs.asList();
     Aggregation aggregation= aggregationList.get(0);
@@ -188,26 +199,47 @@ public class ESQuery {
     NumericMetricsAggregation.SingleValue avg = (NumericMetricsAggregation.SingleValue)l.get(0);
     avg.value();*/
 
-    sresponse.getAggregations().asList().stream().forEach(agg->{
-      System.out.println();
-      ((StringTerms)agg).getBuckets().stream().forEach(e->{
-        Aggregations aggs  = e.getAggregations();
-        List<Aggregation> aggregationList = aggs.asList();
-        aggregationList.stream().forEach(aggregation ->  {
-              List<? extends Histogram.Bucket> buckets = ((Histogram)aggregation).getBuckets();
-              buckets.stream().forEach(aB->{
-                List<Aggregation> aggList = aB.getAggregations().asList();
-                System.out.println("("+e.getKey()+","+aB.getKey()+")"+"=>");
-                aggList.stream().forEach(entry->{
-                  NumericMetricsAggregation.SingleValue val = (NumericMetricsAggregation.SingleValue)entry;
-                  System.out.println(val.getName() + ", "+val.value());
-                });
+      sresponse.getAggregations().asList().stream().forEach(agg -> {
+        System.out.println();
+        ((StringTerms) agg).getBuckets().stream().forEach(e -> {
+          Aggregations aggs = e.getAggregations();
+          List<Aggregation> aggregationList = aggs.asList();
+          aggregationList.stream().forEach(aggregation -> {
+            List<? extends Histogram.Bucket> buckets = ((Histogram) aggregation).getBuckets();
+            buckets.stream().forEach(aB -> {
+              List<Aggregation> aggList = aB.getAggregations().asList();
+              Map<String, Object> metrics = new HashMap<String, Object>();
+              aggList.stream().forEach(entry -> {
+                NumericMetricsAggregation.SingleValue val = (NumericMetricsAggregation.SingleValue) entry;
+                metrics.put(val.getName(), val.value());
               });
-            }
-        );
+              metrics.put("transport", e.getKey());
+              metrics.put("date", aB.getKey());
+              IndexResponse indexResponse = transportClient.prepareIndex("rtaggregation", "agg").setSource(metrics)
+                  .execute().actionGet();
+            });
+          });
+        });
       });
-    });
+    }
 
+    IndexRequest indexRequest = null;
+    try {
+      indexRequest = new IndexRequest("aggregation-meta", "meta", "1")
+          .source(jsonBuilder().startObject().field("lastaggregated", endtime).endObject());
+
+      UpdateRequest updateRequest = null;
+
+      updateRequest = new UpdateRequest("aggregation-meta", "meta", "1")
+          .doc(jsonBuilder().startObject().field("lastaggregated", endtime).endObject()).upsert(indexRequest);
+      transportClient.update(updateRequest).get();
+    } catch (IOException e) {
+      e.printStackTrace();
+    } catch (InterruptedException e) {
+      e.printStackTrace();
+    } catch (ExecutionException e) {
+      e.printStackTrace();
+    }
 
     //System.out.println(sresponse.toString());
     return response;
