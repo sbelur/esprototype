@@ -3,11 +3,11 @@ import org.elasticsearch.action.admin.indices.create.CreateIndexResponse;
 import org.elasticsearch.action.index.IndexResponse;
 import org.elasticsearch.action.search.SearchResponse;
 import org.elasticsearch.client.Client;
-/*
+
 import org.elasticsearch.common.settings.ImmutableSettings;
 import org.elasticsearch.index.query.FilterBuilder;
 import org.elasticsearch.index.query.FilterBuilders;
-*/
+
 import org.elasticsearch.index.query.QueryBuilder;
 import org.elasticsearch.index.query.QueryBuilders;
 
@@ -27,9 +27,16 @@ import org.elasticsearch.common.transport.InetSocketTransportAddress;
 import org.elasticsearch.search.SearchHit;
 import org.elasticsearch.search.aggregations.Aggregation;
 import org.elasticsearch.search.aggregations.AggregationBuilders;
+import org.elasticsearch.search.aggregations.Aggregations;
+import org.elasticsearch.search.aggregations.InternalAggregations;
 import org.elasticsearch.search.aggregations.bucket.histogram.DateHistogram;
+import org.elasticsearch.search.aggregations.bucket.histogram.Histogram;
 import org.elasticsearch.search.aggregations.bucket.histogram.InternalDateHistogram;
+import org.elasticsearch.search.aggregations.bucket.histogram.InternalHistogram;
+import org.elasticsearch.search.aggregations.bucket.terms.StringTerms;
 import org.elasticsearch.search.aggregations.bucket.terms.Terms;
+import org.elasticsearch.search.aggregations.metrics.NumericMetricsAggregation;
+import org.elasticsearch.search.aggregations.metrics.avg.InternalAvg;
 
 /**
  * Created by sbelur on 07/02/16.
@@ -46,6 +53,7 @@ public class ESQuery {
     transportClient.addTransportAddress(new InetSocketTransportAddress("localhost", 9300));
 
   }
+
 
   public SearchResponse searchResultWithAggregation() {
 
@@ -160,21 +168,46 @@ public class ESQuery {
 
     SearchResponse sresponse = transportClient.prepareSearch(indexName).setTypes("rawdata").setQuery(qb)
         //.setPostFilter(fb)
-        .addAggregation(AggregationBuilders.dateHistogram("date").field("date").interval(DateHistogram.Interval.MINUTE)
-            .subAggregation(AggregationBuilders.terms("protocol").field("transport")
-                .subAggregation(AggregationBuilders.avg("size_avg").field("filesize"))
-                .subAggregation(AggregationBuilders.min("size_min").field("filesize"))
-                .subAggregation(AggregationBuilders.max("size_max").field("filesize")))).setSize(0).execute()
+
+            .addAggregation(AggregationBuilders.terms("protocol").field("transport").subAggregation(
+                AggregationBuilders.dateHistogram("date").field("date").interval(DateHistogram.Interval.MINUTE)
+                    .subAggregation(AggregationBuilders.avg("size_avg").field("filesize"))
+                    .subAggregation(AggregationBuilders.min("size_min").field("filesize"))
+                    .subAggregation(AggregationBuilders.max("size_max").field("filesize")))).setSize(0).execute()
         .actionGet();
 
     if (sresponse.getHits().getTotalHits() > 0) {
-
-      Terms  terms = sresponse.getAggregations().get("date");
-      Collection<Terms.Bucket> buckets = terms.getBuckets();
-      for (Terms.Bucket bucket : buckets) {
-        System.out.println(bucket.getKeyAsText() +" ("+bucket.getAggregations()+")");
-      }
+      System.out.println(sresponse.toString());
     }
+   /* Aggregations aggs = ((StringTerms) sresponse.getAggregations().asList().get(0)).getBuckets().get(0).getAggregations();
+    List<Aggregation> aggregationList = aggs.asList();
+    Aggregation aggregation= aggregationList.get(0);
+    List<? extends Histogram.Bucket> buckets = ((Histogram)aggregation).getBuckets();
+    Histogram.Bucket aB = buckets.get(0);
+    List<Aggregation> l= ((Aggregations)((Histogram.Bucket)((Histogram)((StringTerms) sresponse.getAggregations().asList().get(0)).getBuckets().get(0).getAggregations().asList().get(0)).getBuckets().get(0)).getAggregations()).asList();
+    NumericMetricsAggregation.SingleValue avg = (NumericMetricsAggregation.SingleValue)l.get(0);
+    avg.value();*/
+
+    sresponse.getAggregations().asList().stream().forEach(agg->{
+      System.out.println();
+      ((StringTerms)agg).getBuckets().stream().forEach(e->{
+        Aggregations aggs  = e.getAggregations();
+        List<Aggregation> aggregationList = aggs.asList();
+        aggregationList.stream().forEach(aggregation ->  {
+              List<? extends Histogram.Bucket> buckets = ((Histogram)aggregation).getBuckets();
+              buckets.stream().forEach(aB->{
+                List<Aggregation> aggList = aB.getAggregations().asList();
+                System.out.println("("+e.getKey()+","+aB.getKey()+")"+"=>");
+                aggList.stream().forEach(entry->{
+                  NumericMetricsAggregation.SingleValue val = (NumericMetricsAggregation.SingleValue)entry;
+                  System.out.println(val.getName() + ", "+val.value());
+                });
+              });
+            }
+        );
+      });
+    });
+
 
     //System.out.println(sresponse.toString());
     return response;
