@@ -19,9 +19,7 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.text.SimpleDateFormat;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.*;
 import java.util.stream.Stream;
 
 import org.elasticsearch.client.transport.TransportClient;
@@ -32,6 +30,8 @@ import org.elasticsearch.search.aggregations.Aggregation;
 import org.elasticsearch.search.aggregations.AggregationBuilders;
 import org.elasticsearch.search.aggregations.Aggregations;
 import org.elasticsearch.search.aggregations.InternalAggregations;
+import org.elasticsearch.search.aggregations.bucket.SingleBucketAggregation;
+import org.elasticsearch.search.aggregations.bucket.filter.FilterAggregationBuilder;
 import org.elasticsearch.search.aggregations.bucket.histogram.DateHistogram;
 import org.elasticsearch.search.aggregations.bucket.histogram.Histogram;
 import org.elasticsearch.search.aggregations.bucket.histogram.InternalDateHistogram;
@@ -183,21 +183,12 @@ public class ESQuery {
               AggregationBuilders.dateHistogram("date").field("date").interval(DateHistogram.Interval.MINUTE)
                   .subAggregation(AggregationBuilders.avg("size_avg").field("filesize"))
                   .subAggregation(AggregationBuilders.min("size_min").field("filesize"))
+                  .subAggregation(AggregationBuilders.count("reccount").field("filesize"))
                   .subAggregation(AggregationBuilders.max("size_max").field("filesize")))).setSize(0).execute()
           .actionGet();
-
       if (sresponse.getHits().getTotalHits() > 0) {
         System.out.println(sresponse.toString());
       }
-
-   /* Aggregations aggs = ((StringTerms) sresponse.getAggregations().asList().get(0)).getBuckets().get(0).getAggregations();
-    List<Aggregation> aggregationList = aggs.asList();
-    Aggregation aggregation= aggregationList.get(0);
-    List<? extends Histogram.Bucket> buckets = ((Histogram)aggregation).getBuckets();
-    Histogram.Bucket aB = buckets.get(0);
-    List<Aggregation> l= ((Aggregations)((Histogram.Bucket)((Histogram)((StringTerms) sresponse.getAggregations().asList().get(0)).getBuckets().get(0).getAggregations().asList().get(0)).getBuckets().get(0)).getAggregations()).asList();
-    NumericMetricsAggregation.SingleValue avg = (NumericMetricsAggregation.SingleValue)l.get(0);
-    avg.value();*/
 
       sresponse.getAggregations().asList().stream().forEach(agg -> {
         System.out.println();
@@ -254,8 +245,67 @@ public class ESQuery {
     }
   }
 
-  public static void main(String[] args) {
-    new ESQuery().searchResultWithAggregation();
+  private ScheduledFuture getGlobalStats(SumHolder holder) {
+    ScheduledExecutorService executorService = Executors.newScheduledThreadPool(1);
+    ScheduledFuture f = executorService.schedule(new Runnable() {
+      @Override public void run() {
+        Calendar now = Calendar.getInstance(TimeZone.getTimeZone("GMT"));
+        now.set(Calendar.MINUTE, 9);
+        now.set(Calendar.MONTH, 1);
+        now.set(Calendar.DATE, 7);
+        now.set(Calendar.HOUR_OF_DAY, 5);
+        int min = now.get(Calendar.MINUTE);
+        int rem = min % 5;
+        SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSZ");
+        String startTime = null;
+        String endtime = null;
+        Calendar temp = now;
+        temp.set(Calendar.MILLISECOND, 0);
+        temp.set(Calendar.SECOND, 0);
+        if (rem == 0) {
+          startTime = sdf.format(temp.getTime());
+          temp.set(Calendar.MINUTE, min + 5);
+          endtime = sdf.format(temp.getTime());
+        } else {
+          temp.set(Calendar.MINUTE, min - rem);
+          startTime = sdf.format(temp.getTime());
+          temp.set(Calendar.MINUTE, min + (5 - rem));
+          endtime = sdf.format(temp.getTime());
+        }
+        System.out.println("Checking for " + startTime + "," + endtime);
+        //QueryBuilder all = QueryBuilders.boolQuery().
+        FilterBuilder fb = FilterBuilders.rangeFilter("date").gte(startTime).lt(endtime);
+        SearchResponse response = transportClient.prepareSearch("rtaggregation").setTypes("agg")
+            .addAggregation(new FilterAggregationBuilder("filtered").filter(fb)
+            .subAggregation(AggregationBuilders.terms("protocol").field("transport")
+                .subAggregation(AggregationBuilders.sum("total").field("reccount")))).setSize(0).execute().actionGet();
+        System.out.println("total in period " + response.toString());
+        response.getAggregations().asList().stream().forEach(agg ->{
+          Aggregations aggregations = ((SingleBucketAggregation)agg).getAggregations();
+          aggregations.asList().stream().forEach(a -> {
+            ((StringTerms)a).getBuckets().stream().forEach(b->{
+              List<Aggregation> ba = b.getAggregations().asList();
+              ba.stream().forEach(s -> {
+                double value = ((NumericMetricsAggregation.SingleValue) s).value();
+                holder.setTotal((int)value);
+
+              });
+            });
+          });
+        });
+
+      }
+    }, 5, TimeUnit.SECONDS);
+    return f;
+  }
+
+  public static void main(String[] args) throws Exception {
+    ESQuery esQuery = new ESQuery();
+    SumHolder holder = new SumHolder();
+    ScheduledFuture f = esQuery.getGlobalStats(holder);
+    //esQuery.searchResultWithAggregation();
+    f.get(10,TimeUnit.SECONDS);
+    System.out.println("Found hits "+holder.getTotal());
   }
 
   private static class Record {
@@ -281,6 +331,18 @@ public class ESQuery {
 
   private boolean indexExists(String index) {
     return transportClient.admin().indices().prepareExists(index).execute().actionGet().isExists();
+  }
+
+  private static class SumHolder {
+    private  int total;
+
+    public void setTotal(int total) {
+      this.total = total;
+    }
+
+    public int getTotal() {
+      return total;
+    }
   }
 
 }
