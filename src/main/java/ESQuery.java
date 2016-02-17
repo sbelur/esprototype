@@ -42,6 +42,8 @@ public class ESQuery {
 
   private static Log log = LogFactory.getLog(ESQuery.class);
 
+  Optional<String> lastAggTime = Optional.<String>empty();
+
   public ESQuery() {
     Settings settings = ImmutableSettings.settingsBuilder().put("http.port", 9200)
         .put("cluster.name", "cleo.elasticsearch").build();
@@ -81,7 +83,7 @@ public class ESQuery {
           startTime = (String) lastAggMeta.get().getSource().get("lastaggregated");
         }
       }
-
+      lastAggTime = Optional.of(startTime);
       QueryBuilder qb = QueryBuilders.boolQuery().mustNot(QueryBuilders.termQuery("type", "detail"))
           .mustNot(QueryBuilders.termQuery("type", "end")).mustNot(QueryBuilders.termQuery("type", "request"))
           .mustNot(QueryBuilders.termQuery("type", "response")).mustNot(QueryBuilders.termQuery("type", "transfer"))

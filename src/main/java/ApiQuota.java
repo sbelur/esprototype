@@ -1,6 +1,8 @@
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -14,7 +16,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class ApiQuota {
 
   public enum Policy {
-    ALLOW_VIOLATION,han
+    ALLOW_VIOLATION,
     DISCARD_REQUEST
   }
 
@@ -28,15 +30,13 @@ public class ApiQuota {
     this.policy = policy;
   }
 
-
   public static void init() {
     if (initiated.compareAndSet(false, true)) {
       boolean aggregate = Boolean.parseBoolean(System.getProperty("runaggreation", "false"));
-      if(aggregate) {
+      if (aggregate) {
         log.info("Running aggregation");
         scheduleGlobalStatAggregation();
-      }
-      else{
+      } else {
         log.info("Not Running aggregation");
       }
       syncGlobalStats();
@@ -64,14 +64,15 @@ public class ApiQuota {
   // Call it before API call.
   public boolean isInViolation() {
     int next = getCurrentTotalInWindow() + 1;
-    log.info("next will be "+next + " allowed is "+allowed);
+    log.info("next will be " + next + " allowed is " + allowed);
     return next > allowed;
   }
 
   public Optional<QuotaViolatedException> onViolation() {
     if (policy == Policy.ALLOW_VIOLATION) {
       log.warn("Allowing quota violation - Total no of requests " + getCurrentTotalInWindow()
-          + " , whereas configured no is " + allowed + ". time now is "+Calendar.getInstance(TimeZone.getTimeZone("GMT")).getTime() + "...wait till start of 5 min boundary.");
+          + " , whereas configured no is " + allowed + ". time now is " + Calendar
+          .getInstance(TimeZone.getTimeZone("GMT")).getTime() + "...wait till start of 5 min boundary.");
       return Optional.empty();
     } else {
       return Optional.of(new QuotaViolatedException());
@@ -108,14 +109,42 @@ public class ApiQuota {
         log.info("Syncing");
         ESQuery.SumHolder holder = esQuery.getGlobalStats();
         globalCount.set(holder.getTotal());
-        log.info("Gloabal ->" + globalCount.get() + " at time "+Calendar
-            .getInstance(TimeZone.getTimeZone("GMT")).getTime());
+        log.info("Gloabal ->" + globalCount.get() + " at time " + Calendar.getInstance(TimeZone.getTimeZone("GMT"))
+            .getTime());
       }, 5, 30, TimeUnit.SECONDS);
     }
   }
 
   private int getCurrentTotalInWindow() {
-    AtomicInteger local = getLocalForCurrentMin();
+    AtomicInteger local = null;
+    SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSZ");
+    SimpleDateFormat localsdf = new SimpleDateFormat("\"d MMM yyyy HH:mm:ss 'GMT'\"");
+    if (esQuery.lastAggTime.isPresent()) {
+
+      try {
+        Date last = sdf.parse(esQuery.lastAggTime.get());
+        AtomicInteger allLocal = new AtomicInteger(0);
+        localCount.forEach((k, v) -> {
+
+          try {
+            Date aLocalDt = localsdf.parse(k);
+            if(aLocalDt.after(last) && aLocalDt.equals(last)){
+              allLocal.addAndGet(v.get());
+            }
+
+          } catch (ParseException e) {
+            throw new RuntimeException(e);
+          }
+        });
+        local = allLocal;
+      }
+      catch (Exception e){
+        e.printStackTrace();
+        local = getLocalForCurrentMin();
+      }
+    } else {
+      local = getLocalForCurrentMin();
+    }
     log.info("Current local,global " + local.get() + " , " + globalCount.get() + " at time " + Calendar
         .getInstance(TimeZone.getTimeZone("GMT")).getTime());
     return local.get() + globalCount.get();
