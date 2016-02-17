@@ -14,7 +14,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class ApiQuota {
 
   public enum Policy {
-    ALLOW_VIOLATION,
+    ALLOW_VIOLATION,han
     DISCARD_REQUEST
   }
 
@@ -28,9 +28,17 @@ public class ApiQuota {
     this.policy = policy;
   }
 
-  public void init() {
+
+  public static void init() {
     if (initiated.compareAndSet(false, true)) {
-      scheduleGlobalStatAggregation();
+      boolean aggregate = Boolean.parseBoolean(System.getProperty("runaggreation", "false"));
+      if(aggregate) {
+        log.info("Running aggregation");
+        scheduleGlobalStatAggregation();
+      }
+      else{
+        log.info("Not Running aggregation");
+      }
       syncGlobalStats();
     }
   }
@@ -48,10 +56,10 @@ public class ApiQuota {
   private static final ESQuery esQuery = new ESQuery();
 
   // For now only AS2 - ideally should be a map / protocol
-  private AtomicInteger globalCount = new AtomicInteger(0);
+  private static AtomicInteger globalCount = new AtomicInteger(0);
 
   //date truncated at minute to local stats in that minute
-  private Map<String, AtomicInteger> localCount = new HashMap<>();
+  private static Map<String, AtomicInteger> localCount = new HashMap<>();
 
   // Call it before API call.
   public boolean isInViolation() {
@@ -85,7 +93,7 @@ public class ApiQuota {
     return localCount.get(key);
   }
 
-  private void scheduleGlobalStatAggregation() {
+  private static void scheduleGlobalStatAggregation() {
     if (globalAggScheduled.compareAndSet(false, true)) {
       globalAggregator.scheduleAtFixedRate(() -> {
         log.info("Aggregating");
@@ -94,7 +102,7 @@ public class ApiQuota {
     }
   }
 
-  private void syncGlobalStats() {
+  private static void syncGlobalStats() {
     if (globalSyncScheduled.compareAndSet(false, true)) {
       globalSyncer.scheduleAtFixedRate(() -> {
         log.info("Syncing");
