@@ -114,7 +114,8 @@ public class ApiQuota {
             .getTime());
         if(!aggregate){
           SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSZ");
-          esQuery.lastAggTime = Optional.of(esQuery.getLastAggTime(esQuery.getNow(), sdf));
+          sdf.setTimeZone(TimeZone.getTimeZone("GMT"));
+          esQuery.lastAggTime = Optional.ofNullable(esQuery.getLastAggTime(esQuery.getNow(), sdf));
         }
       }, 5, 20, TimeUnit.SECONDS);
     }
@@ -123,18 +124,25 @@ public class ApiQuota {
   private int getCurrentTotalInWindow() {
     AtomicInteger local = null;
     SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSZ");
+    sdf.setTimeZone(TimeZone.getTimeZone("GMT"));
     SimpleDateFormat localsdf = new SimpleDateFormat("d MMM yyyy HH:mm:ss 'GMT'");
+    localsdf.setTimeZone(TimeZone.getTimeZone("GMT"));
 
     if (esQuery.lastAggTime.isPresent()) {
       try {
         Date last = sdf.parse(esQuery.lastAggTime.get());
-        log.info("last..."+last);
+        Calendar lastgmt = Calendar.getInstance(TimeZone.getTimeZone("GMT"));
+        lastgmt.setTimeInMillis(last.getTime());
+        log.info("last..."+lastgmt.getTimeInMillis());
         AtomicInteger allLocal = new AtomicInteger(0);
         localCount.forEach((k, v) -> {
 
           try {
             Date aLocalDt = localsdf.parse(k);
-            if(aLocalDt.after(last) || aLocalDt.equals(last)){
+            Calendar localGMT = Calendar.getInstance(TimeZone.getTimeZone("GMT"));
+            localGMT.setTimeInMillis(aLocalDt.getTime());
+            log.info("localGMT..." + localGMT.getTimeInMillis());
+            if(localGMT.after(lastgmt) || localGMT.equals(lastgmt)){
               allLocal.addAndGet(v.get());
             }
 
@@ -142,7 +150,13 @@ public class ApiQuota {
             throw new RuntimeException(e);
           }
         });
-        local = allLocal;
+        if(allLocal.get()==0){
+          log.info("****** OOPS");
+          local = getLocalForCurrentMin();
+        }
+        else {
+          local = allLocal;
+        }
         log.info("local since last agg time "+local.get());
       }
       catch (Exception e){

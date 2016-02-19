@@ -58,6 +58,7 @@ public class ESQuery {
     try {
       Calendar now = getNow();
       SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSZ");
+      sdf.setTimeZone(TimeZone.getTimeZone("GMT"));
       String endtime = sdf.format(now.getTime());
 
       String indexName = "aggregation-input";
@@ -66,7 +67,8 @@ public class ESQuery {
       createIndex("rtaggregation");
 
       String startTime = getLastAggTime(now, sdf);
-      lastAggTime = Optional.of(startTime);
+      lastAggTime = Optional.ofNullable(startTime);
+      log.info("set last agg time as "+lastAggTime);
       QueryBuilder qb = QueryBuilders.boolQuery().mustNot(QueryBuilders.termQuery("type", "detail"))
           .mustNot(QueryBuilders.termQuery("type", "end")).mustNot(QueryBuilders.termQuery("type", "request"))
           .mustNot(QueryBuilders.termQuery("type", "response")).mustNot(QueryBuilders.termQuery("type", "transfer"))
@@ -227,23 +229,29 @@ public class ESQuery {
   }
 
   String getLastAggTime(Calendar now, SimpleDateFormat sdf) {
-    String startTime = null;
-    SearchResponse metaResp = transportClient.prepareSearch("aggregation-meta").setTypes("meta")
-        .setQuery(QueryBuilders.matchAllQuery()).execute().actionGet();
-    System.out.println(metaResp.toString());
-    long metahitcount = metaResp.getHits().getTotalHits();
-    if (metahitcount == 0) {
-      now.set(Calendar.MINUTE, now.get(Calendar.MINUTE) - 5);
-      now.set(Calendar.SECOND, 0);
-      now.set(Calendar.MILLISECOND, 0);
-      startTime = sdf.format(now.getTime());
-    } else {
-      Optional<SearchHit> lastAggMeta = Arrays.stream(metaResp.getHits().getHits()).findFirst();
-      if (lastAggMeta.isPresent()) {
-        startTime = (String) lastAggMeta.get().getSource().get("lastaggregated");
+    try {
+      String startTime = null;
+      sdf.setTimeZone(TimeZone.getTimeZone("GMT"));
+      SearchResponse metaResp = transportClient.prepareSearch("aggregation-meta").setTypes("meta")
+          .setQuery(QueryBuilders.matchAllQuery()).execute().actionGet();
+      System.out.println(metaResp.toString());
+      long metahitcount = metaResp.getHits().getTotalHits();
+      if (metahitcount == 0) {
+        now.set(Calendar.MINUTE, now.get(Calendar.MINUTE) - 5);
+        now.set(Calendar.SECOND, 0);
+        now.set(Calendar.MILLISECOND, 0);
+        startTime = sdf.format(now.getTime());
+      } else {
+        Optional<SearchHit> lastAggMeta = Arrays.stream(metaResp.getHits().getHits()).findFirst();
+        if (lastAggMeta.isPresent()) {
+          startTime = (String) lastAggMeta.get().getSource().get("lastaggregated");
+        }
       }
+      return startTime;
+    } catch (Exception e) {
+      e.printStackTrace();
+      return null;
     }
-    return startTime;
   }
 
   private void createIndex(String indexName) {
@@ -267,6 +275,7 @@ public class ESQuery {
       int min = now.get(Calendar.MINUTE);
       int rem = min % 5;
       SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSZ");
+      sdf.setTimeZone(TimeZone.getTimeZone("GMT"));
       String startTime = null;
       String endtime = null;
       Calendar temp = now;
