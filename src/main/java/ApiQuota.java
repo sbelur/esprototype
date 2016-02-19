@@ -26,13 +26,14 @@ public class ApiQuota {
 
   private static final AtomicBoolean initiated = new AtomicBoolean(false);
 
+  private static final boolean aggregate = Boolean.parseBoolean(System.getProperty("runaggreation", "false"));
+
   public ApiQuota(Policy policy) {
     this.policy = policy;
   }
 
   public static void init() {
     if (initiated.compareAndSet(false, true)) {
-      boolean aggregate = Boolean.parseBoolean(System.getProperty("runaggreation", "false"));
       if (aggregate) {
         log.info("Running aggregation");
         scheduleGlobalStatAggregation();
@@ -109,26 +110,31 @@ public class ApiQuota {
         log.info("Syncing");
         ESQuery.SumHolder holder = esQuery.getGlobalStats();
         globalCount.set(holder.getTotal());
-        log.info("Gloabal ->" + globalCount.get() + " at time " + Calendar.getInstance(TimeZone.getTimeZone("GMT"))
+        log.info("Global ->" + globalCount.get() + " at time " + Calendar.getInstance(TimeZone.getTimeZone("GMT"))
             .getTime());
-      }, 5, 30, TimeUnit.SECONDS);
+        if(!aggregate){
+          SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSZ");
+          esQuery.lastAggTime = Optional.of(esQuery.getLastAggTime(esQuery.getNow(), sdf));
+        }
+      }, 5, 20, TimeUnit.SECONDS);
     }
   }
 
   private int getCurrentTotalInWindow() {
     AtomicInteger local = null;
     SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSZ");
-    SimpleDateFormat localsdf = new SimpleDateFormat("\"d MMM yyyy HH:mm:ss 'GMT'\"");
-    if (esQuery.lastAggTime.isPresent()) {
+    SimpleDateFormat localsdf = new SimpleDateFormat("d MMM yyyy HH:mm:ss 'GMT'");
 
+    if (esQuery.lastAggTime.isPresent()) {
       try {
         Date last = sdf.parse(esQuery.lastAggTime.get());
+        log.info("last..."+last);
         AtomicInteger allLocal = new AtomicInteger(0);
         localCount.forEach((k, v) -> {
 
           try {
             Date aLocalDt = localsdf.parse(k);
-            if(aLocalDt.after(last) && aLocalDt.equals(last)){
+            if(aLocalDt.after(last) || aLocalDt.equals(last)){
               allLocal.addAndGet(v.get());
             }
 
@@ -137,6 +143,7 @@ public class ApiQuota {
           }
         });
         local = allLocal;
+        log.info("local since last agg time "+local.get());
       }
       catch (Exception e){
         e.printStackTrace();
@@ -144,6 +151,7 @@ public class ApiQuota {
       }
     } else {
       local = getLocalForCurrentMin();
+      log.info("No last agg found - value "+local.get());
     }
     log.info("Current local,global " + local.get() + " , " + globalCount.get() + " at time " + Calendar
         .getInstance(TimeZone.getTimeZone("GMT")).getTime());

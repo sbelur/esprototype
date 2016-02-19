@@ -56,9 +56,7 @@ public class ESQuery {
   public void searchResultWithAggregation() {
 
     try {
-      Calendar now = Calendar.getInstance(TimeZone.getTimeZone("GMT"));
-      now.set(Calendar.MILLISECOND, 0);
-      now.set(Calendar.SECOND, 0);
+      Calendar now = getNow();
       SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSZ");
       String endtime = sdf.format(now.getTime());
 
@@ -67,22 +65,7 @@ public class ESQuery {
       createIndex("aggregation-meta");
       createIndex("rtaggregation");
 
-      String startTime = null;
-      SearchResponse metaResp = transportClient.prepareSearch("aggregation-meta").setTypes("meta")
-          .setQuery(QueryBuilders.matchAllQuery()).execute().actionGet();
-      System.out.println(metaResp.toString());
-      long metahitcount = metaResp.getHits().getTotalHits();
-      if (metahitcount == 0) {
-        now.set(Calendar.MINUTE, now.get(Calendar.MINUTE) - 5);
-        now.set(Calendar.SECOND, 0);
-        now.set(Calendar.MILLISECOND, 0);
-        startTime = sdf.format(now.getTime());
-      } else {
-        Optional<SearchHit> lastAggMeta = Arrays.stream(metaResp.getHits().getHits()).findFirst();
-        if (lastAggMeta.isPresent()) {
-          startTime = (String) lastAggMeta.get().getSource().get("lastaggregated");
-        }
-      }
+      String startTime = getLastAggTime(now, sdf);
       lastAggTime = Optional.of(startTime);
       QueryBuilder qb = QueryBuilders.boolQuery().mustNot(QueryBuilders.termQuery("type", "detail"))
           .mustNot(QueryBuilders.termQuery("type", "end")).mustNot(QueryBuilders.termQuery("type", "request"))
@@ -131,7 +114,7 @@ public class ESQuery {
         if (ty != null)
           r.runtype = ty;
         else {
-          Optional<Record> aRec = list.stream().filter(rec -> rec.threadId.equals(threadId))
+          Optional<Record> aRec = list.stream().filter(rec -> rec.threadId != null && rec.threadId.equals(threadId))
               .filter(record -> record.runtype != null).findFirst();
           if (aRec.isPresent()) {
             r.runtype = aRec.get().runtype;
@@ -234,6 +217,33 @@ public class ESQuery {
 
     //System.out.println(sresponse.toString());
     //return response;
+  }
+
+  Calendar getNow() {
+    Calendar now = Calendar.getInstance(TimeZone.getTimeZone("GMT"));
+    now.set(Calendar.MILLISECOND, 0);
+    now.set(Calendar.SECOND, 0);
+    return now;
+  }
+
+  String getLastAggTime(Calendar now, SimpleDateFormat sdf) {
+    String startTime = null;
+    SearchResponse metaResp = transportClient.prepareSearch("aggregation-meta").setTypes("meta")
+        .setQuery(QueryBuilders.matchAllQuery()).execute().actionGet();
+    System.out.println(metaResp.toString());
+    long metahitcount = metaResp.getHits().getTotalHits();
+    if (metahitcount == 0) {
+      now.set(Calendar.MINUTE, now.get(Calendar.MINUTE) - 5);
+      now.set(Calendar.SECOND, 0);
+      now.set(Calendar.MILLISECOND, 0);
+      startTime = sdf.format(now.getTime());
+    } else {
+      Optional<SearchHit> lastAggMeta = Arrays.stream(metaResp.getHits().getHits()).findFirst();
+      if (lastAggMeta.isPresent()) {
+        startTime = (String) lastAggMeta.get().getSource().get("lastaggregated");
+      }
+    }
+    return startTime;
   }
 
   private void createIndex(String indexName) {
